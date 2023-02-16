@@ -14,6 +14,7 @@ enum
 {
     TOKEN_TYPE_HEADER,
     TOKEN_TYPE_IMAGE,
+    TOKEN_TYPE_LINK,
     TOKEN_TYPE_PARAGRAPH,
     TOKEN_TYPE_ITALIC,
     TOKEN_TYPE_BOLD,
@@ -187,6 +188,10 @@ static void printtoken(Token *t)
             printf("TOKEN_TYHPE_IMAGE { alt = %s, src = %s }\n",
                     t->value.link.alt, t->value.link.src);
             break;
+        case TOKEN_TYPE_LINK:
+            printf("TOKEN_TYHPE_LINK { alt = %s, src = %s }\n",
+                    t->value.link.alt, t->value.link.src);
+            break;
         case TOKEN_TYPE_ITALIC:
             printf("TOKEN_TYPE_ITALIC\n");
             break;
@@ -289,14 +294,31 @@ static void rendertag(Token *t, int close)
     out = stringcat(tag, out);
 }
 
-static void renderimg(Token *t)
+static void renderlink(Token *t)
 {
-    char *tag = createstring("<img src=\"");
+    char *tag = createstring("<");
+
+    if (t->type == TOKEN_TYPE_IMAGE)
+        tag = stringcat("img src=\"", tag);
+    else if (t->type == TOKEN_TYPE_LINK)
+        tag = stringcat("a href=\"", tag);
 
     tag = stringcat(t->value.link.src, tag);
     tag = stringcat("\" alt=\"", tag);
     tag = stringcat(t->value.link.alt, tag);
-    tag = stringcat("\" \\>", tag);
+
+    if (t->type == TOKEN_TYPE_IMAGE)
+        tag = stringcat("\" \\>", tag);
+    else if (t->type == TOKEN_TYPE_LINK) {
+        tag = stringcat("\">", tag);
+
+        if (strlen(t->value.link.alt) == 0)
+            tag = stringcat(t->value.link.src, tag);
+        else
+            tag = stringcat(t->value.link.alt, tag);
+
+        tag = stringcat("</a>", tag);
+    }
 
     out = stringcat(tag, out);
     freestring(tag);
@@ -376,7 +398,8 @@ static void render(List *list)
                 }
                 break;
             case TOKEN_TYPE_IMAGE:
-                renderimg(t);
+            case TOKEN_TYPE_LINK:
+                renderlink(t);
                 break;
             case TOKEN_TYPE_TEXT:
                 /* listadd(renderl, t); */
@@ -426,6 +449,7 @@ static Token* createtoken(int type)
             t->value.s = createstring("");
             break;
         case TOKEN_TYPE_IMAGE:
+        case TOKEN_TYPE_LINK:
             t->value.link.src = createstring("");
             t->value.link.alt = createstring("");
             break;
@@ -444,6 +468,7 @@ static void freetoken(Token *token)
             freestring(token->value.s);
             break;
         case TOKEN_TYPE_IMAGE:
+        case TOKEN_TYPE_LINK:
             freestring(token->value.link.alt);
             freestring(token->value.link.src);
             break;
@@ -466,7 +491,9 @@ static void freetokenlist(List *list)
 static void tokenize(char *md)
 {
     Token *t;
-    unsigned int ch = 0;
+    unsigned int ch = 0, bch;
+    unsigned char valid = 0;
+    char c[1];
 
     while (md[ch]) {
         if (CHAR_IS_NEWLINE(md[ch])) {
@@ -485,15 +512,15 @@ static void tokenize(char *md)
 
             if (CHAR_IS_SPACE(md[ch]))
                 ++ch;
+        } else if (md[ch] == '[') {
+            t = createtoken(TOKEN_TYPE_LINK);
+            bch = ch;
+            goto createlink;
         } else if (CHAR_IS_EXCLAMATION(md[ch])) {
-            /* create token img */
-            unsigned int bch = ch;
-            char c[1];
-            unsigned char valid = 0;
-
             if (md[++ch] == '[') {
                 t = createtoken(TOKEN_TYPE_IMAGE);
 
+createlink:
                 while (md[++ch] != ']' && !CHAR_IS_EOF(md[ch])) {
                     c[0] = md[ch];
                     stringcat(c, t->value.link.alt);
@@ -533,8 +560,6 @@ static void tokenize(char *md)
             listadd(tokens, t);
         } else if (CHAR_IS_TEXT(md[ch])) {
 createtext:
-            char c[1];
-
             t = createtoken(TOKEN_TYPE_TEXT);
 
             while (CHAR_IS_TEXT(md[ch])) {
