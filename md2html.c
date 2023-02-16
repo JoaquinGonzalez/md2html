@@ -185,6 +185,12 @@ static void printlist(List *list)
             case TOKEN_TYPE_HEADER:
                 printf("TOKEN_TYPE_HEADER { n = %i }\n", t->value.i);
                 break;
+            case TOKEN_TYPE_ITALIC:
+                printf("TOKEN_TYPE_ITALIC\n");
+                break;
+            case TOKEN_TYPE_BOLD:
+                printf("TOKEN_TYPE_BOLD\n");
+                break;
             case TOKEN_TYPE_TEXT:
                 printf("TOKEN_TYPE_TEXT { text = %s }\n", t->value.s);
                 break;
@@ -385,18 +391,21 @@ static void tokenize(char *md)
             listadd(tokens, t);
             ++ch;
         } else if (CHAR_IS_HEADER(md[ch])) {
-            unsigned int n = 0;
+            unsigned int n = 1;
 
-            while(CHAR_IS_HEADER(md[ch++])) ++n;
+            while(CHAR_IS_HEADER(md[++ch])) ++n;
 
             t = createtoken(TOKEN_TYPE_HEADER);
             t->value.i = n;
 
             listadd(tokens, t);
-        } else if (CHAR_IS_ASTERISK(md[ch])) {
-            unsigned int n = 0;
 
-            while (CHAR_IS_ASTERISK(md[ch++])) ++n;
+            if (CHAR_IS_SPACE(md[ch]))
+                ++ch;
+        } else if (CHAR_IS_ASTERISK(md[ch])) {
+            unsigned int n = 1;
+
+            while (CHAR_IS_ASTERISK(md[++ch])) ++n;
 
             if (n == 1) {
                 t = createtoken(TOKEN_TYPE_ITALIC);
