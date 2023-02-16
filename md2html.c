@@ -302,8 +302,17 @@ static void render(List *list)
             case TOKEN_TYPE_HEADER:
             case TOKEN_TYPE_BOLD:
             case TOKEN_TYPE_ITALIC:
-                stackpush(t);
-                renderstacktop(0);
+                if (st != NULL) {
+                    Token *top = (Token*)stacktop();
+
+                    if (top->type == t->type) {
+                        renderstacktop(1);
+                        stackpop();
+                    }
+                } else {
+                    stackpush(t);
+                    renderstacktop(0);
+                }
                 break;
             case TOKEN_TYPE_TEXT:
                 /* listadd(renderl, t); */
