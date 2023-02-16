@@ -29,7 +29,7 @@ typedef struct t_List
 
 typedef struct
 {
-    int type;
+    unsigned int type;
     union {
         int i;
         char *s;
@@ -96,11 +96,11 @@ static char* itoa(int val, int base)
 
 static char* createstring(char* str)
 {
-    int size = sizeof(int) + strlen(str) +  256;
+    const unsigned int size = sizeof(unsigned int) + strlen(str) +  256;
     void *head = (void*)calloc(size, sizeof(char));
-    char *headstr = (char*)(head + sizeof(int) + 1);
+    char *headstr = (char*)(head + sizeof(unsigned int) + 1);
 
-    *(int*)head = size;
+    *(unsigned int*)head = size;
     strcpy(headstr, str);
 
     return headstr;
@@ -108,19 +108,19 @@ static char* createstring(char* str)
 
 static char* createstring2(int size)
 {
-    int nsize = sizeof(int) + size;
+    const unsigned int nsize = sizeof(unsigned int) + size;
     void *head = (void*)calloc(nsize, sizeof(char));
-    char *headstr = (char*)(head + sizeof(int) + 1);
+    char *headstr = (char*)(head + sizeof(unsigned int) + 1);
 
-    *(int*)head = size;
+    *(unsigned int*)head = size;
 
     return headstr;
 }
 
 static char* stringcat(char *from, char *to)
 {
-    void *head = (void*)(to - sizeof(int) - 1);
-    int size = *(int*)head;
+    void *head = (void*)(to - sizeof(unsigned int) - 1);
+    const unsigned int size = *(unsigned int*)head;
 
     if (strlen(from) + strlen(to) > size) {
         char *c = createstring2(strlen(from) + strlen(to) + 256);
@@ -137,7 +137,7 @@ static char* stringcat(char *from, char *to)
 
 static void freestring(char *str)
 {
-    void *head = (void*)(str - sizeof(int) - 1);
+    void *head = (void*)(str - sizeof(unsigned int) - 1);
     free(head);
 }
 
@@ -377,7 +377,7 @@ static void freetokenlist(List *list)
 static void tokenize(char *md)
 {
     Token *t;
-    int ch = 0;
+    unsigned int ch = 0;
 
     while (md[ch]) {
         if (CHAR_IS_NEWLINE(md[ch])) {
@@ -385,7 +385,7 @@ static void tokenize(char *md)
             listadd(tokens, t);
             ++ch;
         } else if (CHAR_IS_HEADER(md[ch])) {
-            int n = 0;
+            unsigned int n = 0;
 
             while(CHAR_IS_HEADER(md[ch++])) ++n;
 
@@ -394,7 +394,7 @@ static void tokenize(char *md)
 
             listadd(tokens, t);
         } else if (CHAR_IS_ASTERISK(md[ch])) {
-            int n = 0;
+            unsigned int n = 0;
 
             while (CHAR_IS_ASTERISK(md[ch++])) ++n;
 
