@@ -204,6 +204,9 @@ static void printtoken(Token *t)
         case TOKEN_TYPE_TEXT:
             printf("TOKEN_TYPE_TEXT { text = %s }\n", t->value.s);
             break;
+        case TOKEN_TYPE_CODE:
+            printf("TOKEN_TYPE_CODE { code = %s }\n", t->value.s);
+            break;
         case TOKEN_TYPE_NEWLINE:
             printf("TOKEN_TYPE_NEWLINE\n");
             break;
@@ -283,13 +286,27 @@ static void rendertag(Token *t, int close)
         case TOKEN_TYPE_ITALIC:
             tagname = "em";
             break;
+        case TOKEN_TYPE_CODE:
+            tagname = "code";
+            break;
     }
 
-    if (close == 0) {
+    if (close == 0)
         sprintf(tag, "<%s>", tagname);
-    } else {
+    else
         sprintf(tag, "</%s>", tagname);
-    }
+
+    out = stringcat(tag, out);
+}
+
+static void rendertag2(char *tagname, int close)
+{
+    char tag[100];
+
+    if (close == 0)
+        sprintf(tag, "<%s>", tagname);
+    else
+        sprintf(tag, "</%s>", tagname);
 
     out = stringcat(tag, out);
 }
@@ -359,6 +376,11 @@ static void renderaddp()
     renderstacktop(0);
 }
 
+static void rendertext(Token *t)
+{
+    out = stringcat(t->value.s, out);
+}
+
 static unsigned char nl = 0;
 
 static void render(List *list)
@@ -406,7 +428,14 @@ static void render(List *list)
                 if (st == NULL)
                     renderaddp();
 
-                out = stringcat(t->value.s, out);
+                rendertext(t);
+                break;
+            case TOKEN_TYPE_CODE:
+                rendertag2("pre", 0);
+                rendertag(t, 0);
+                rendertext(t);
+                rendertag(t, 1);
+                rendertag2("pre", 1);
                 break;
             case TOKEN_TYPE_NEWLINE:
                 if (st != NULL) {
@@ -492,10 +521,12 @@ static void tokenize(char *md)
 {
     Token *t;
     unsigned int ch = 0, bch;
-    unsigned char valid = 0;
+    unsigned char valid;
     char c[1];
 
     while (md[ch]) {
+        valid = 0;
+
         if (CHAR_IS_NEWLINE(md[ch])) {
             t = createtoken(TOKEN_TYPE_NEWLINE);
             listadd(tokens, t);
@@ -512,6 +543,27 @@ static void tokenize(char *md)
 
             if (CHAR_IS_SPACE(md[ch]))
                 ++ch;
+        } else if (md[ch] == '`') {
+            bch = ch;
+            t = createtoken(TOKEN_TYPE_CODE);
+
+            if (md[++ch] == '`' && md[++ch] == '`') {
+                while (md[++ch] != '`' && !CHAR_IS_EOF(md[ch])) {
+                    c[0] = md[ch];
+                    stringcat(c, t->value.s);
+                }
+
+                if (md[ch++] == '`' && md[ch++] == '`' && md[ch++] == '`')
+                    valid = 1;
+            }
+
+            if (!valid) {
+                freetoken(t);
+                ch = bch;
+                goto createtext;
+            } else {
+                listadd(tokens, t);
+            }
         } else if (md[ch] == '[') {
             t = createtoken(TOKEN_TYPE_LINK);
             bch = ch;
