@@ -2,11 +2,13 @@
 #include <stdlib.h>
 #include <string.h>
 
-#define CHAR_IS_NEWLINE(x)  x == 10
-#define CHAR_IS_HEADER(x)   x == 35
-#define CHAR_IS_ASTERISK(x) x == 42
-#define CHAR_IS_SPACE(x)    x == 32
-#define CHAR_IS_TEXT(x)     x >= 32 && x <= 41 || x >= 43 && x <= 126
+#define CHAR_IS_EOF(x)         x == 0
+#define CHAR_IS_NEWLINE(x)     x == 10
+#define CHAR_IS_HEADER(x)      x == 35
+#define CHAR_IS_ASTERISK(x)    x == 42
+#define CHAR_IS_SPACE(x)       x == 32
+#define CHAR_IS_EXCLAMATION(x) x == 33
+#define CHAR_IS_TEXT(x)        x >= 32 && x <= 41 || x >= 43 && x <= 126
 
 enum
 {
@@ -36,7 +38,7 @@ typedef struct
         struct {
             char *alt;
             char *src;
-        } img;
+        } link;
     } value;
 } Token;
 
@@ -47,6 +49,7 @@ static char* stringcat(char*, char*);
 static void freestring(char*);
 static List* createlist();
 static void listadd(List*, void*);
+static void printtoken(Token*);
 static void printlist(List*);
 static void freelist(List*);
 static void stackpush(void*);
@@ -174,31 +177,40 @@ static void freelist(List *list)
     }
 }
 
+static void printtoken(Token *t)
+{
+    switch (t->type) {
+        case TOKEN_TYPE_HEADER:
+            printf("TOKEN_TYPE_HEADER { n = %i }\n", t->value.i);
+            break;
+        case TOKEN_TYPE_IMAGE:
+            printf("TOKEN_TYHPE_IMAGE { alt = %s, src = %s }\n",
+                    t->value.link.alt, t->value.link.src);
+            break;
+        case TOKEN_TYPE_ITALIC:
+            printf("TOKEN_TYPE_ITALIC\n");
+            break;
+        case TOKEN_TYPE_BOLD:
+            printf("TOKEN_TYPE_BOLD\n");
+            break;
+        case TOKEN_TYPE_PARAGRAPH:
+            printf("TOKEN_TYPE_PARAGRAPH\n");
+            break;
+        case TOKEN_TYPE_TEXT:
+            printf("TOKEN_TYPE_TEXT { text = %s }\n", t->value.s);
+            break;
+        case TOKEN_TYPE_NEWLINE:
+            printf("TOKEN_TYPE_NEWLINE\n");
+            break;
+    }
+}
+
 static void printlist(List *list)
 {
     Token *t;
 
-    if (list->ptr != NULL) {
-        t = (Token*)list->ptr;
-
-        switch (t->type) {
-            case TOKEN_TYPE_HEADER:
-                printf("TOKEN_TYPE_HEADER { n = %i }\n", t->value.i);
-                break;
-            case TOKEN_TYPE_ITALIC:
-                printf("TOKEN_TYPE_ITALIC\n");
-                break;
-            case TOKEN_TYPE_BOLD:
-                printf("TOKEN_TYPE_BOLD\n");
-                break;
-            case TOKEN_TYPE_TEXT:
-                printf("TOKEN_TYPE_TEXT { text = %s }\n", t->value.s);
-                break;
-            case TOKEN_TYPE_NEWLINE:
-                printf("TOKEN_TYPE_NEWLINE\n");
-                break;
-        }
-    }
+    if (list->ptr != NULL)
+        printtoken((Token*)list->ptr);
 
     if (list->next != NULL)
         printlist(list->next);
@@ -207,6 +219,11 @@ static void printlist(List *list)
 static void stackpush(void *ptr)
 {
     List *nst;
+
+#ifdef DEBUG
+    printf("PUSH: ");
+    printtoken((Token*)ptr);
+#endif
 
     nst = (List*)malloc(sizeof(List));
     nst->ptr = ptr;
@@ -217,12 +234,19 @@ static void stackpush(void *ptr)
 static void* stackpop()
 {
     if (st == NULL) return NULL;
+
+    void *optr = st->ptr;
+
+#ifdef DEBUG
+    printf("POP: ");
+    printtoken((Token*)optr);
+#endif
     
     List *ost = st;
     st = ost->next;
     free(ost);
 
-    return ost->ptr;
+    return optr;
 }
 
 static void* stacktop()
@@ -265,6 +289,19 @@ static void rendertag(Token *t, int close)
     out = stringcat(tag, out);
 }
 
+static void renderimg(Token *t)
+{
+    char *tag = createstring("<img src=\"");
+
+    tag = stringcat(t->value.link.src, tag);
+    tag = stringcat("\" alt=\"", tag);
+    tag = stringcat(t->value.link.alt, tag);
+    tag = stringcat("\" \\>", tag);
+
+    out = stringcat(tag, out);
+    freestring(tag);
+}
+
 static void renderstacktop(int close)
 {
     Token *sttoken = (Token*)stacktop();
@@ -293,41 +330,78 @@ static void freerenderl(List *list)
         freerenderl(list->next);
 }
 
+static void renderaddp()
+{
+    Token *nt = createtoken(TOKEN_TYPE_PARAGRAPH);
+    stackpush(nt);
+    renderstacktop(0);
+}
+
+static unsigned char nl = 0;
+
 static void render(List *list)
 {
+    Token *t, *top;
+
     if (list->ptr != NULL) {
-        Token *t = (Token*)list->ptr;
+        t = (Token*)list->ptr;
+
+#ifdef DEBUG
+        printtoken(t);
+#endif
 
         switch (t->type) {
-            case TOKEN_TYPE_HEADER:
             case TOKEN_TYPE_BOLD:
             case TOKEN_TYPE_ITALIC:
+            case TOKEN_TYPE_HEADER:
                 if (st != NULL) {
-                    Token *top = (Token*)stacktop();
+                    top = (Token*)stacktop();
 
                     if (top->type == t->type) {
                         renderstacktop(1);
                         stackpop();
+                    } else {
+                        if (top->type == TOKEN_TYPE_PARAGRAPH) {
+                            stackpush(t);
+                            renderstacktop(0);
+                        }
                     }
                 } else {
+                    if (t->type == TOKEN_TYPE_BOLD
+                        || t->type == TOKEN_TYPE_ITALIC)
+                        renderaddp();
+
                     stackpush(t);
                     renderstacktop(0);
                 }
                 break;
+            case TOKEN_TYPE_IMAGE:
+                renderimg(t);
+                break;
             case TOKEN_TYPE_TEXT:
                 /* listadd(renderl, t); */
-                if (st == NULL) {
-                    Token *nt = createtoken(TOKEN_TYPE_PARAGRAPH);
-                    stackpush(nt);
-                    renderstacktop(0);
-                }
+                if (st == NULL)
+                    renderaddp();
+
                 out = stringcat(t->value.s, out);
                 break;
             case TOKEN_TYPE_NEWLINE:
                 if (st != NULL) {
-                    renderstacktop(1);
-                    stackpop();
+                    top = (Token*)stacktop();
+
+                    if (top->type == TOKEN_TYPE_HEADER) {
+                        renderstacktop(1);
+                        stackpop();
+                    }
+
+                    if (nl == 2 || list->next == NULL) {
+                        renderstacktop(1);
+                        stackpop();
+                        nl = 0;
+                    }
+
                     out = stringcat("\n", out);
+                    ++nl;
                 }
                 break;
         }
@@ -352,8 +426,8 @@ static Token* createtoken(int type)
             t->value.s = createstring("");
             break;
         case TOKEN_TYPE_IMAGE:
-            t->value.img.src = createstring("");
-            t->value.img.alt = createstring("");
+            t->value.link.src = createstring("");
+            t->value.link.alt = createstring("");
             break;
     }
 
@@ -370,8 +444,8 @@ static void freetoken(Token *token)
             freestring(token->value.s);
             break;
         case TOKEN_TYPE_IMAGE:
-            freestring(token->value.img.alt);
-            freestring(token->value.img.src);
+            freestring(token->value.link.alt);
+            freestring(token->value.link.src);
             break;
     }
 
@@ -411,6 +485,40 @@ static void tokenize(char *md)
 
             if (CHAR_IS_SPACE(md[ch]))
                 ++ch;
+        } else if (CHAR_IS_EXCLAMATION(md[ch])) {
+            /* create token img */
+            unsigned int bch = ch;
+            char c[1];
+            unsigned char valid = 0;
+
+            if (md[++ch] == '[') {
+                t = createtoken(TOKEN_TYPE_IMAGE);
+
+                while (md[++ch] != ']' && !CHAR_IS_EOF(md[ch])) {
+                    c[0] = md[ch];
+                    stringcat(c, t->value.link.alt);
+                }
+
+                if (md[++ch] == '(') {
+                    while (md[++ch] != ')' && !CHAR_IS_EOF(md[ch])) {
+                        c[0] = md[ch];
+                        stringcat(c, t->value.link.src);
+                    }
+
+                    if (md[ch++] == ')')
+                        valid = 1;
+                }
+
+                if (!valid)
+                    freetoken(t);
+            }
+
+            if (!valid) {
+                ch = bch;
+                goto createtext;
+            } else {
+                listadd(tokens, t);
+            }
         } else if (CHAR_IS_ASTERISK(md[ch])) {
             unsigned int n = 1;
 
@@ -424,6 +532,7 @@ static void tokenize(char *md)
 
             listadd(tokens, t);
         } else if (CHAR_IS_TEXT(md[ch])) {
+createtext:
             char c[1];
 
             t = createtoken(TOKEN_TYPE_TEXT);
@@ -448,7 +557,10 @@ char* md2html(char *md)
     tokens = createlist();
 
     tokenize(md);
+
+#ifdef DEBUG
     printlist(tokens);
+#endif
 
     out = createstring("");
     renderl = createlist();
