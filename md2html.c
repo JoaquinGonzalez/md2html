@@ -207,6 +207,9 @@ static void printtoken(Token *t)
         case TOKEN_TYPE_CODE:
             printf("TOKEN_TYPE_CODE { code = %s }\n", t->value.s);
             break;
+        case TOKEN_TYPE_HTML:
+            printf("TOKEN_TYPE_HTML { html = %s }\n", t->value.s);
+            break;
         case TOKEN_TYPE_NEWLINE:
             printf("TOKEN_TYPE_NEWLINE\n");
             break;
@@ -381,86 +384,91 @@ static void rendertext(Token *t)
     out = stringcat(t->value.s, out);
 }
 
-static unsigned char nl = 0;
-
 static void render(List *list)
 {
-    Token *t, *top;
+    Token *t, *top, *prev = NULL;
+    List *next = list;
+    unsigned char nl = 0;
 
-    if (list->ptr != NULL) {
-        t = (Token*)list->ptr;
+    while (next != NULL) {
+        if (next->ptr != NULL) {
+            t = (Token*)next->ptr;
 
 #ifdef DEBUG
-        printtoken(t);
+            printtoken(t);
 #endif
 
-        switch (t->type) {
-            case TOKEN_TYPE_BOLD:
-            case TOKEN_TYPE_ITALIC:
-            case TOKEN_TYPE_HEADER:
-                if (st != NULL) {
-                    top = (Token*)stacktop();
+            switch (t->type) {
+                case TOKEN_TYPE_BOLD:
+                case TOKEN_TYPE_ITALIC:
+                case TOKEN_TYPE_HEADER:
+                    if (st != NULL) {
+                        top = (Token*)stacktop();
 
-                    if (top->type == t->type) {
-                        renderstacktop(1);
-                        stackpop();
-                    } else {
-                        if (top->type == TOKEN_TYPE_PARAGRAPH) {
-                            stackpush(t);
-                            renderstacktop(0);
+                        if (top->type == t->type) {
+                            renderstacktop(1);
+                            stackpop();
+                        } else {
+                            if (top->type == TOKEN_TYPE_PARAGRAPH) {
+                                stackpush(t);
+                                renderstacktop(0);
+                            }
                         }
+                    } else {
+                        if (t->type == TOKEN_TYPE_BOLD
+                            || t->type == TOKEN_TYPE_ITALIC)
+                            renderaddp();
+
+                        stackpush(t);
+                        renderstacktop(0);
                     }
-                } else {
-                    if (t->type == TOKEN_TYPE_BOLD
-                        || t->type == TOKEN_TYPE_ITALIC)
-                        renderaddp();
-
-                    stackpush(t);
-                    renderstacktop(0);
-                }
-                break;
-            case TOKEN_TYPE_IMAGE:
-            case TOKEN_TYPE_LINK:
-                renderlink(t);
-                break;
-            case TOKEN_TYPE_TEXT:
-                /* listadd(renderl, t); */
-                if (st == NULL)
-                    renderaddp();
-
-                rendertext(t);
-                break;
-            case TOKEN_TYPE_CODE:
-                rendertag2("pre", 0);
-                rendertag(t, 0);
-                rendertext(t);
-                rendertag(t, 1);
-                rendertag2("pre", 1);
-                break;
-            case TOKEN_TYPE_NEWLINE:
-                if (st != NULL) {
-                    top = (Token*)stacktop();
-
-                    if (top->type == TOKEN_TYPE_HEADER) {
-                        renderstacktop(1);
-                        stackpop();
+                    break;
+                case TOKEN_TYPE_IMAGE:
+                case TOKEN_TYPE_LINK:
+                    renderlink(t);
+                    break;
+                case TOKEN_TYPE_TEXT:
+                    if (st == NULL) {
+                        if (prev == NULL || prev->type != TOKEN_TYPE_HTML)
+                            renderaddp();
                     }
 
-                    if (nl == 2 || list->next == NULL) {
-                        renderstacktop(1);
-                        stackpop();
-                        nl = 0;
-                    }
+                    rendertext(t);
+                    break;
+                case TOKEN_TYPE_CODE:
+                    rendertag2("pre", 0);
+                    rendertag(t, 0);
+                    rendertext(t);
+                    rendertag(t, 1);
+                    rendertag2("pre", 1);
+                    break;
+                case TOKEN_TYPE_HTML:
+                    rendertext(t);
+                    break;
+                case TOKEN_TYPE_NEWLINE:
+                    if (st != NULL) {
+                        top = (Token*)stacktop();
 
-                    out = stringcat("\n", out);
-                    ++nl;
-                }
-                break;
+                        if (top->type == TOKEN_TYPE_HEADER) {
+                            renderstacktop(1);
+                            stackpop();
+                        }
+
+                        if (nl == 2 || next->next == NULL) {
+                            renderstacktop(1);
+                            stackpop();
+                            nl = 0;
+                        }
+
+                        out = stringcat("\n", out);
+                        ++nl;
+                    }
+                    break;
+            }
         }
-    }
 
-    if (list->next != NULL) {
-        render(list->next);
+        prev = t;
+        next = next->next;
     }
 }
 
@@ -527,7 +535,9 @@ static void tokenize(char *md)
     while (md[ch]) {
         valid = 0;
 
-        if (CHAR_IS_NEWLINE(md[ch])) {
+        if (CHAR_IS_SPACE(md[ch])) {
+            ++ch;
+        } else if (CHAR_IS_NEWLINE(md[ch])) {
             t = createtoken(TOKEN_TYPE_NEWLINE);
             listadd(tokens, t);
             ++ch;
@@ -543,6 +553,25 @@ static void tokenize(char *md)
 
             if (CHAR_IS_SPACE(md[ch]))
                 ++ch;
+        } else if (md[ch] == '<') {
+            bch = ch;
+            t = createtoken(TOKEN_TYPE_HTML);
+
+            while (md[ch] != '>' && !CHAR_IS_EOF(md[ch])) {
+                c[0] = md[ch];
+                stringcat(c, t->value.s);
+                ++ch;
+            }
+
+            if (md[ch] != '>') {
+                ch = bch;
+                goto createtext;
+            } else {
+                c[0] = md[ch];
+                stringcat(c, t->value.s);
+                listadd(tokens, t);
+                ++ch;
+            }
         } else if (md[ch] == '`') {
             bch = ch;
             t = createtoken(TOKEN_TYPE_CODE);
@@ -636,7 +665,7 @@ char* md2html(char *md)
     tokenize(md);
 
 #ifdef DEBUG
-    printlist(tokens);
+    /*printlist(tokens);*/
 #endif
 
     out = createstring("");
