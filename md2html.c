@@ -10,6 +10,8 @@
 #define CHAR_IS_EXCLAMATION(x) x == 33
 #define CHAR_IS_TEXT(x)        x >= 32 && x <= 41 || x >= 43 && x <= 126
 
+#define DEBUG_PARSER
+
 enum MDTokenType
 {
     MD_HEADER,
@@ -33,10 +35,10 @@ struct MDList
 struct MDToken
 {
     enum MDTokenType type;
-    union {
+    union MDTokenValue {
         int i;
         char *s;
-        struct {
+        struct MDTokenLinkValue {
             char *alt;
             char *src;
         } link;
@@ -45,7 +47,7 @@ struct MDToken
 
 static char* itoa(int, int);
 static char* createstring(char*);
-static char* createstring2(int);
+static char* createstring2(size_t);
 static char* stringcat(char*, char*);
 static void freestring(char*);
 static struct MDList* createlist();
@@ -112,31 +114,31 @@ static char* itoa(int val, int base)
 
 static char* createstring(char* str)
 {
-    const unsigned int size = sizeof(unsigned int) + strlen(str) +  256;
+    const size_t size = sizeof(size_t) + strlen(str) +  256;
     void *head = (void*)calloc(size, sizeof(char));
-    char *headstr = (char*)(head + sizeof(unsigned int) + 1);
+    char *headstr = (char*)(head + sizeof(size_t) + 1);
 
-    *(unsigned int*)head = size;
+    *(size_t*)head = size;
     strcpy(headstr, str);
 
     return headstr;
 }
 
-static char* createstring2(int size)
+static char* createstring2(size_t size)
 {
-    const unsigned int nsize = sizeof(unsigned int) + size;
+    const size_t nsize = sizeof(size_t) + size;
     void *head = (void*)calloc(nsize, sizeof(char));
-    char *headstr = (char*)(head + sizeof(unsigned int) + 1);
+    char *headstr = (char*)(head + sizeof(size_t) + 1);
 
-    *(unsigned int*)head = size;
+    *(size_t*)head = size;
 
     return headstr;
 }
 
 static char* stringcat(char *from, char *to)
 {
-    void *head = (void*)(to - sizeof(unsigned int) - 1);
-    const unsigned int size = *(unsigned int*)head;
+    void *head = (void*)(to - sizeof(size_t) - 1);
+    const size_t size = *(size_t*)head;
 
     if (strlen(from) + strlen(to) > size) {
         char *c = createstring2(strlen(from) + strlen(to) + 256);
@@ -153,7 +155,7 @@ static char* stringcat(char *from, char *to)
 
 static void freestring(char *str)
 {
-    void *head = (void*)(str - sizeof(unsigned int) - 1);
+    void *head = (void*)(str - sizeof(size_t) - 1);
     free(head);
 }
 
@@ -663,7 +665,7 @@ char* md2html(char *md)
 
     tokenize(md);
 
-#ifdef DEBUG
+#ifdef DEBUG_PARSER
     printlist(tokens);
 #endif
 
