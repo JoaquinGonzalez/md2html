@@ -8,7 +8,7 @@
 #define CHAR_IS_ASTERISK(x)    x == 42
 #define CHAR_IS_SPACE(x)       x == 32
 #define CHAR_IS_EXCLAMATION(x) x == 33
-#define CHAR_IS_TEXT(x)        x >= 32 && x <= 41 || x >= 43 && x <= 126
+#define CHAR_IS_TEXT(x)        (x >= 32 && x <= 41) || (x >= 43 && x <= 126)
 
 #define DEBUG_PARSER
 
@@ -45,7 +45,6 @@ struct MDToken
     } value;
 };
 
-static char* itoa(int, int);
 static char* createstring(char*);
 static char* createstring2(size_t);
 static char* stringcat(char*, char*);
@@ -60,8 +59,6 @@ static void* stackpop();
 static void freestack();
 static void rendertag(struct MDToken*, int);
 static void renderstacktop(int);
-static void renderlist(struct MDList*);
-static void freerenderl(struct MDList*);
 static void render(struct MDList*);
 static struct MDToken* createtoken(int);
 static void freetoken(struct MDToken*);
@@ -93,29 +90,13 @@ static char *headertag[] = {
     "h5",
     "h6"
 };
-static char *taglist[] = {
-    0,
-    "img",
-    "p"
-};
 static char buff[1<<25];
 static char *out;
-
-static char* itoa(int val, int base)
-{
-	static char buf[32] = {0};
-	int i = 30;
-
-	for(; val && i ; --i, val /= base)
-		buf[i] = "0123456789abcdef"[val % base];
-
-	return &buf[i+1];
-}
 
 static char* createstring(char* str)
 {
     const size_t size = sizeof(size_t) + strlen(str) +  256;
-    void *head = (void*)calloc(size, sizeof(char));
+    char *head = (char*)calloc(size, sizeof(char));
     char *headstr = (char*)(head + sizeof(size_t) + 1);
 
     *(size_t*)head = size;
@@ -127,7 +108,7 @@ static char* createstring(char* str)
 static char* createstring2(size_t size)
 {
     const size_t nsize = sizeof(size_t) + size;
-    void *head = (void*)calloc(nsize, sizeof(char));
+    char *head = (char*)calloc(nsize, sizeof(char));
     char *headstr = (char*)(head + sizeof(size_t) + 1);
 
     *(size_t*)head = size;
@@ -219,8 +200,6 @@ static void printtoken(struct MDToken *t)
 
 static void printlist(struct MDList *list)
 {
-    struct MDToken *t;
-
     if (list->ptr != NULL)
         printtoken((struct MDToken*)list->ptr);
 
@@ -245,16 +224,19 @@ static void stackpush(void *ptr)
 
 static void* stackpop()
 {
+    struct MDList *ost;
+    void *optr;
+
     if (st == NULL) return NULL;
 
-    void *optr = st->ptr;
+    optr = st->ptr;
 
 #ifdef DEBUG
     printf("POP: ");
     printtoken((struct MDToken*)optr);
 #endif
-    
-    struct MDList *ost = st;
+
+    ost = st;
     st = ost->next;
     free(ost);
 
@@ -292,6 +274,12 @@ static void rendertag(struct MDToken *t, int close)
             break;
         case MD_CODE:
             tagname = "code";
+            break;
+        case MD_IMAGE:
+        case MD_LINK:
+        case MD_TEXT:
+        case MD_NEWLINE:
+        case MD_HTML:
             break;
     }
 
@@ -351,26 +339,6 @@ static void renderstacktop(int close)
 
     if (sttoken != NULL)
         rendertag(sttoken, close);
-}
-
-static void renderlist(struct MDList* list)
-{
-    if (list->ptr != NULL) {
-        struct MDToken *t = (struct MDToken*)list->ptr;
-
-        if (t->type == MD_TEXT)
-            out = stringcat(t->value.s, out);
-    }
-
-    if (list->next != NULL)
-        renderlist(list->next);
-}
-
-static void freerenderl(struct MDList *list)
-{
-    list->ptr = NULL;
-    if (list->next != NULL)
-        freerenderl(list->next);
 }
 
 static void renderaddp()
@@ -465,6 +433,8 @@ static void render(struct MDList *list)
                         ++nl;
                     }
                     break;
+                case MD_PARAGRAPH:
+                    break;
             }
         }
 
@@ -491,6 +461,11 @@ static struct MDToken* createtoken(int type)
             t->value.link.src = createstring("");
             t->value.link.alt = createstring("");
             break;
+        case MD_HEADER:
+        case MD_PARAGRAPH:
+        case MD_ITALIC:
+        case MD_NEWLINE:
+            break;
     }
 
     return t;
@@ -509,6 +484,11 @@ static void freetoken(struct MDToken *token)
         case MD_LINK:
             freestring(token->value.link.alt);
             freestring(token->value.link.src);
+            break;
+        case MD_HEADER:
+        case MD_PARAGRAPH:
+        case MD_ITALIC:
+        case MD_NEWLINE:
             break;
     }
 
