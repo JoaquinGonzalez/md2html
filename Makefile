@@ -1,7 +1,7 @@
 SRC = md2html.c
 
 md2html: $(SRC)
-	c89 $(SRC) -g -o $@
+	$(CC) $(SRC) -std=c89 -pedantic -march=native -Wall -O0 -g -o $@
 
 clean:
 	rm md2html
