@@ -2,15 +2,14 @@
 #include <stdlib.h>
 #include <string.h>
 
+#define DEFAULT_STRING_LEN 256
+
 #define CHAR_IS_EOF(x)         x == 0
 #define CHAR_IS_NEWLINE(x)     x == 10
 #define CHAR_IS_HEADER(x)      x == 35
-#define CHAR_IS_ASTERISK(x)    x == 42
+#define CHAR_IS_STAR(x)        x == 42
 #define CHAR_IS_SPACE(x)       x == 32
-#define CHAR_IS_EXCLAMATION(x) x == 33
-#define CHAR_IS_TEXT(x)        (x >= 32 && x <= 41) || (x >= 43 && x <= 126)
-
-#define DEBUG_PARSER
+#define CHAR_IS_TEXT(x)        (x >= 33 && x <= 126)
 
 enum MDTokenType
 {
@@ -32,23 +31,43 @@ struct MDList
     struct MDList *next;
 };
 
+struct MDString
+{
+    char *str;
+    size_t size;
+};
+
 struct MDToken
 {
     enum MDTokenType type;
     union MDTokenValue {
         int i;
-        char *s;
+        struct MDString *s;
         struct MDTokenLinkValue {
-            char *alt;
-            char *src;
+            struct MDString *alt;
+            struct MDString *src;
         } link;
     } value;
 };
 
-static char* createstring(char*);
-static char* createstring2(size_t);
-static char* stringcat(char*, char*);
-static void freestring(char*);
+struct MDRenderer
+{
+    struct MDList *renderl;
+    struct MDList *st;
+    struct MDString *out;
+};
+
+struct MDTokenizer
+{
+    char *source;
+    unsigned int index;
+    unsigned int save;
+    struct MDList *tokens;
+};
+
+static struct MDString* createstring(char*, size_t);
+static struct MDString* stringcat(char*, struct MDString*);
+static void freestring(struct MDString*);
 static struct MDList* createlist();
 static void listadd(struct MDList*, void*);
 static void printtoken(struct MDToken*);
@@ -59,16 +78,20 @@ static void* stackpop();
 static void freestack();
 static void rendertag(struct MDToken*, int);
 static void renderstacktop(int);
+static void appendout(char *str);
 static void render(struct MDList*);
 static struct MDToken* createtoken(int);
 static void freetoken(struct MDToken*);
 static void freetokenlist(struct MDList*);
+static void backtrack();
+static void save();
+static char currentchr();
+static char advancechr();
 static void tokenize(char*);
 char* md2html(char*);
 
-static struct MDList *tokens;
-static struct MDList *renderl;
-static struct MDList *st = NULL;
+static struct MDTokenizer tokenizer;
+static struct MDRenderer renderer;
 
 static const char* TOKEN_NAMES[] = {
     "MD_HEADER",
@@ -91,53 +114,41 @@ static char *headertag[] = {
     "h6"
 };
 static char buff[1<<25];
-static char *out;
 
-static char* createstring(char* str)
+static struct MDString* createstring(char* str, size_t len)
 {
-    const size_t size = sizeof(size_t) + strlen(str) +  256;
-    char *head = (char*)calloc(size, sizeof(char));
-    char *headstr = (char*)(head + sizeof(size_t) + 1);
+    struct MDString *s = (struct MDString*)malloc(sizeof(struct MDString));
+    s->size = strlen(str) + len;
+    s->str = (char*)calloc(s->size, sizeof(char));
 
-    *(size_t*)head = size;
-    strcpy(headstr, str);
+    strcat(s->str, str);
 
-    return headstr;
+    return s;
 }
 
-static char* createstring2(size_t size)
+static struct MDString* stringcat(char *from, struct MDString *to)
 {
-    const size_t nsize = sizeof(size_t) + size;
-    char *head = (char*)calloc(nsize, sizeof(char));
-    char *headstr = (char*)(head + sizeof(size_t) + 1);
+    size_t flen = strlen(from);
+    size_t tlen = strlen(to->str);
+    struct MDString *ns;
 
-    *(size_t*)head = size;
-
-    return headstr;
-}
-
-static char* stringcat(char *from, char *to)
-{
-    void *head = (void*)(to - sizeof(size_t) - 1);
-    const size_t size = *(size_t*)head;
-
-    if (strlen(from) + strlen(to) > size) {
-        char *c = createstring2(strlen(from) + strlen(to) + 256);
-        strcat(c, to);
-        strcat(c, from);
-        free(head);
-        return c;
+    if (flen + tlen + 1 >= to->size) {
+        ns = createstring("", flen + tlen + DEFAULT_STRING_LEN);
+        strcat(ns->str, to->str);
+        strcat(ns->str, from);
+        freestring(to);
+        return ns;
     }
 
-    strcat(to, from);
+    strcat(to->str, from);
 
     return to;
 }
 
-static void freestring(char *str)
+static void freestring(struct MDString *s)
 {
-    void *head = (void*)(str - sizeof(size_t) - 1);
-    free(head);
+    free(s->str);
+    free(s);
 }
 
 static struct MDList* createlist()
@@ -167,10 +178,8 @@ static void freelist(struct MDList *list)
 {
     if (list->next != NULL) {
         freelist(list->next);
-        free(list->next);
-
-        list->next = NULL;
     }
+    free(list);
 }
 
 static void printtoken(struct MDToken *t)
@@ -182,7 +191,7 @@ static void printtoken(struct MDToken *t)
         case MD_IMAGE:
         case MD_LINK:
             printf("%s { alt = %s, src = %s }\n",
-                    TOKEN_NAMES[t->type], t->value.link.alt, t->value.link.src);
+                    TOKEN_NAMES[t->type], t->value.link.alt->str, t->value.link.src->str);
             break;
         case MD_ITALIC:
         case MD_BOLD:
@@ -193,7 +202,7 @@ static void printtoken(struct MDToken *t)
         case MD_TEXT:
         case MD_CODE:
         case MD_HTML:
-            printf("%s { text = %s }\n", TOKEN_NAMES[t->type], t->value.s);
+            printf("%s { text = %s }\n", TOKEN_NAMES[t->type], t->value.s->str);
             break;
     }
 }
@@ -218,8 +227,8 @@ static void stackpush(void *ptr)
 
     nst = (struct MDList*)malloc(sizeof(struct MDList));
     nst->ptr = ptr;
-    nst->next = st;
-    st = nst;
+    nst->next = renderer.st;
+    renderer.st = nst;
 }
 
 static void* stackpop()
@@ -227,17 +236,17 @@ static void* stackpop()
     struct MDList *ost;
     void *optr;
 
-    if (st == NULL) return NULL;
+    if (renderer.st == NULL) return NULL;
 
-    optr = st->ptr;
+    optr = renderer.st->ptr;
 
 #ifdef DEBUG
     printf("POP: ");
     printtoken((struct MDToken*)optr);
 #endif
 
-    ost = st;
-    st = ost->next;
+    ost = renderer.st;
+    renderer.st = ost->next;
     free(ost);
 
     return optr;
@@ -245,13 +254,13 @@ static void* stackpop()
 
 static void* stacktop()
 {
-    if (st == NULL) return NULL;
-    return st->ptr;
+    if (renderer.st == NULL) return NULL;
+    return renderer.st->ptr;
 }
 
 static void freestack()
 {
-    while (st != NULL) stackpop();
+    while (renderer.st != NULL) stackpop();
 }
 
 static void rendertag(struct MDToken *t, int close)
@@ -288,7 +297,7 @@ static void rendertag(struct MDToken *t, int close)
     else
         sprintf(tag, "</%s>", tagname);
 
-    out = stringcat(tag, out);
+    appendout(tag);
 }
 
 static void rendertag2(char *tagname, int close)
@@ -300,36 +309,36 @@ static void rendertag2(char *tagname, int close)
     else
         sprintf(tag, "</%s>", tagname);
 
-    out = stringcat(tag, out);
+    appendout(tag);
 }
 
 static void renderlink(struct MDToken *t)
 {
-    char *tag = createstring("<");
+    struct MDString *tag = createstring("<", DEFAULT_STRING_LEN);
 
     if (t->type == MD_IMAGE)
         tag = stringcat("img src=\"", tag);
     else if (t->type == MD_LINK)
         tag = stringcat("a href=\"", tag);
 
-    tag = stringcat(t->value.link.src, tag);
+    tag = stringcat(t->value.link.src->str, tag);
     tag = stringcat("\" alt=\"", tag);
-    tag = stringcat(t->value.link.alt, tag);
+    tag = stringcat(t->value.link.alt->str, tag);
 
     if (t->type == MD_IMAGE)
         tag = stringcat("\" \\>", tag);
     else if (t->type == MD_LINK) {
         tag = stringcat("\">", tag);
 
-        if (strlen(t->value.link.alt) == 0)
-            tag = stringcat(t->value.link.src, tag);
+        if (strlen(t->value.link.alt->str) == 0)
+            tag = stringcat(t->value.link.src->str, tag);
         else
-            tag = stringcat(t->value.link.alt, tag);
+            tag = stringcat(t->value.link.alt->str, tag);
 
         tag = stringcat("</a>", tag);
     }
 
-    out = stringcat(tag, out);
+    appendout(tag->str);
     freestring(tag);
 }
 
@@ -350,7 +359,12 @@ static void renderaddp()
 
 static void rendertext(struct MDToken *t)
 {
-    out = stringcat(t->value.s, out);
+    appendout(t->value.s->str);
+}
+
+static void appendout(char *str)
+{
+    renderer.out = stringcat(str, renderer.out);
 }
 
 static void render(struct MDList *list)
@@ -371,7 +385,7 @@ static void render(struct MDList *list)
                 case MD_BOLD:
                 case MD_ITALIC:
                 case MD_HEADER:
-                    if (st != NULL) {
+                    if (renderer.st != NULL) {
                         top = (struct MDToken*)stacktop();
 
                         if (top->type == t->type) {
@@ -397,7 +411,7 @@ static void render(struct MDList *list)
                     renderlink(t);
                     break;
                 case MD_TEXT:
-                    if (st == NULL) {
+                    if (renderer.st == NULL) {
                         if (prev == NULL || prev->type != MD_HTML)
                             renderaddp();
                     }
@@ -415,7 +429,7 @@ static void render(struct MDList *list)
                     rendertext(t);
                     break;
                 case MD_NEWLINE:
-                    if (st != NULL) {
+                    if (renderer.st != NULL) {
                         top = (struct MDToken*)stacktop();
 
                         if (top->type == MD_HEADER) {
@@ -429,7 +443,7 @@ static void render(struct MDList *list)
                             nl = 0;
                         }
 
-                        out = stringcat("\n", out);
+                        appendout("\n");
                         ++nl;
                     }
                     break;
@@ -454,12 +468,12 @@ static struct MDToken* createtoken(int type)
         case MD_BOLD:
         case MD_CODE:
         case MD_HTML:
-            t->value.s = createstring("");
+            t->value.s = createstring("", DEFAULT_STRING_LEN);
             break;
         case MD_IMAGE:
         case MD_LINK:
-            t->value.link.src = createstring("");
-            t->value.link.alt = createstring("");
+            t->value.link.src = createstring("", DEFAULT_STRING_LEN);
+            t->value.link.alt = createstring("", DEFAULT_STRING_LEN);
             break;
         case MD_HEADER:
         case MD_PARAGRAPH:
@@ -499,6 +513,7 @@ static void freetokenlist(struct MDList *list)
 {
     if (list->ptr != NULL) {
         freetoken((struct MDToken*)list->ptr);
+        list->ptr = NULL;
     }
 
     if (list->next != NULL) {
@@ -506,133 +521,196 @@ static void freetokenlist(struct MDList *list)
     }
 }
 
+static int parsetext()
+{
+    struct MDToken *t = createtoken(MD_TEXT);
+    char c[1];
+
+    if (!CHAR_IS_TEXT(currentchr())) {
+        freetoken(t);
+        return 0;
+    }
+
+    while (CHAR_IS_TEXT(currentchr()) || CHAR_IS_SPACE(currentchr())) {
+        c[0] = currentchr();
+        t->value.s = stringcat(c, t->value.s);
+        advancechr();
+    }
+
+    listadd(tokenizer.tokens, t);
+    return 1;
+}
+
+static void parsestar()
+{
+    struct MDToken *t;
+    unsigned int n = 1;
+
+    while (CHAR_IS_STAR(advancechr()) || n >= 2) ++n;
+
+    if (n == 1)
+        t = createtoken(MD_ITALIC);
+    else if (n == 2)
+        t = createtoken(MD_BOLD);
+
+    listadd(tokenizer.tokens, t);
+}
+
+static void parselink(enum MDTokenType type)
+{
+    struct MDToken *t = createtoken(type);
+    char c[1];
+    unsigned int valid = 0;
+
+    save();
+    while (advancechr() != ']' && !CHAR_IS_EOF(currentchr())) {
+        c[0] = currentchr();
+        t->value.link.alt = stringcat(c, t->value.link.alt);
+    }
+
+    if (advancechr() == '(') {
+        while (advancechr() != ')' && !CHAR_IS_EOF(currentchr())) {
+            c[0] = currentchr();
+            t->value.link.src = stringcat(c, t->value.link.src);
+        }
+
+        if (currentchr() == ')')
+            valid = 1;
+    }
+
+    if (valid) {
+        listadd(tokenizer.tokens, t);
+        advancechr();
+    } else {
+        freetoken(t);
+        backtrack();
+        parsetext();
+    }
+}
+
+static void parsecode()
+{
+    struct MDToken *t = createtoken(MD_CODE);
+    char c[1];
+
+    save();
+    if (advancechr() == '`' && advancechr() == '`') {
+        while (advancechr() != '`' && !CHAR_IS_EOF(currentchr())) {
+            c[0] = currentchr();
+            t->value.s = stringcat(c, t->value.s);
+        }
+
+        if (currentchr() == '`' && advancechr() == '`' && advancechr() == '`') {
+            listadd(tokenizer.tokens, t);
+            advancechr();
+        } else {
+            freetoken(t);
+            backtrack();
+            parsetext();
+        }
+    }
+}
+
+static void parsehtml()
+{
+    struct MDToken *t = createtoken(MD_HTML);
+    char c[1];
+
+    save();
+    while (currentchr() != '>' && !CHAR_IS_EOF(currentchr())) {
+        c[0] = currentchr();
+        t->value.s = stringcat(c, t->value.s);
+        advancechr();
+    }
+
+    if (currentchr() != '>') {
+        backtrack();
+        freetoken(t);
+        parsetext();
+    } else {
+        c[0] = currentchr();
+        t->value.s = stringcat(c, t->value.s);
+        listadd(tokenizer.tokens, t);
+        advancechr();
+    }
+}
+
+static void parseheader()
+{
+    struct MDToken *t = createtoken(MD_HEADER);
+    t->value.i = 1;
+
+    while (CHAR_IS_HEADER(advancechr())) t->value.i++;
+
+    listadd(tokenizer.tokens, t);
+}
+
+static void backtrack()
+{
+    tokenizer.index = tokenizer.save;
+}
+
+static void save()
+{
+    tokenizer.save = tokenizer.index;
+}
+
+static char currentchr()
+{
+    return tokenizer.source[tokenizer.index];
+}
+
+static char advancechr()
+{
+    return tokenizer.source[++tokenizer.index];
+}
+
 static void tokenize(char *md)
 {
     struct MDToken *t;
-    unsigned int ch = 0, bch;
-    unsigned char valid;
-    char c[1];
 
-    while (md[ch]) {
-        valid = 0;
+    tokenizer.index = 0;
+    tokenizer.source = md;
+    tokenizer.tokens = createlist();
 
-        if (CHAR_IS_SPACE(md[ch])) {
-            ++ch;
-        } else if (CHAR_IS_NEWLINE(md[ch])) {
-            t = createtoken(MD_NEWLINE);
-            listadd(tokens, t);
-            ++ch;
-        } else if (CHAR_IS_HEADER(md[ch])) {
-            unsigned int n = 1;
-
-            while(CHAR_IS_HEADER(md[++ch])) ++n;
-
-            t = createtoken(MD_HEADER);
-            t->value.i = n;
-
-            listadd(tokens, t);
-
-            if (CHAR_IS_SPACE(md[ch]))
-                ++ch;
-        } else if (md[ch] == '<') {
-            bch = ch;
-            t = createtoken(MD_HTML);
-
-            while (md[ch] != '>' && !CHAR_IS_EOF(md[ch])) {
-                c[0] = md[ch];
-                stringcat(c, t->value.s);
-                ++ch;
-            }
-
-            if (md[ch] != '>') {
-                ch = bch;
-                goto createtext;
-            } else {
-                c[0] = md[ch];
-                stringcat(c, t->value.s);
-                listadd(tokens, t);
-                ++ch;
-            }
-        } else if (md[ch] == '`') {
-            bch = ch;
-            t = createtoken(MD_CODE);
-
-            if (md[++ch] == '`' && md[++ch] == '`') {
-                while (md[++ch] != '`' && !CHAR_IS_EOF(md[ch])) {
-                    c[0] = md[ch];
-                    stringcat(c, t->value.s);
+    while (currentchr()) {
+        switch (currentchr()) {
+            case ' ':
+                advancechr();
+                break;
+            case '\n':
+                t = createtoken(MD_NEWLINE);
+                listadd(tokenizer.tokens, t);
+                advancechr();
+                break;
+            case '#':
+                parseheader();
+                break;
+            case '<':
+                parsehtml();
+                break;
+            case '`':
+                parsecode();
+                break;
+            case '!':
+                save();
+                if (advancechr() != '[') {
+                    backtrack();
+                    parsetext();
+                } else {
+                    parselink(MD_IMAGE);
                 }
-
-                if (md[ch++] == '`' && md[ch++] == '`' && md[ch++] == '`')
-                    valid = 1;
-            }
-
-            if (!valid) {
-                freetoken(t);
-                ch = bch;
-                goto createtext;
-            } else {
-                listadd(tokens, t);
-            }
-        } else if (md[ch] == '[') {
-            t = createtoken(MD_LINK);
-            bch = ch;
-            goto createlink;
-        } else if (CHAR_IS_EXCLAMATION(md[ch])) {
-            if (md[++ch] == '[') {
-                t = createtoken(MD_IMAGE);
-
-createlink:
-                while (md[++ch] != ']' && !CHAR_IS_EOF(md[ch])) {
-                    c[0] = md[ch];
-                    stringcat(c, t->value.link.alt);
-                }
-
-                if (md[++ch] == '(') {
-                    while (md[++ch] != ')' && !CHAR_IS_EOF(md[ch])) {
-                        c[0] = md[ch];
-                        stringcat(c, t->value.link.src);
-                    }
-
-                    if (md[ch++] == ')')
-                        valid = 1;
-                }
-
-                if (!valid)
-                    freetoken(t);
-            }
-
-            if (!valid) {
-                ch = bch;
-                goto createtext;
-            } else {
-                listadd(tokens, t);
-            }
-        } else if (CHAR_IS_ASTERISK(md[ch])) {
-            unsigned int n = 1;
-
-            while (CHAR_IS_ASTERISK(md[++ch])) ++n;
-
-            if (n == 1) {
-                t = createtoken(MD_ITALIC);
-            } else if (n == 2) {
-                t = createtoken(MD_BOLD);
-            }
-
-            listadd(tokens, t);
-        } else if (CHAR_IS_TEXT(md[ch])) {
-createtext:
-            t = createtoken(MD_TEXT);
-
-            while (CHAR_IS_TEXT(md[ch])) {
-                c[0] = md[ch];
-                t->value.s = stringcat(c, t->value.s);
-                ch++;
-            }
-
-            listadd(tokens, t);
-        } else {
-            ++ch;
+                break;
+            case '[':
+                parselink(MD_LINK);
+                break;
+            case '*':
+                parsestar();
+                break;
+            default:
+                if (!parsetext())
+                    advancechr();
+                break;
         }
     }
 }
@@ -641,26 +719,25 @@ char* md2html(char *md)
 {
     char *html;
 
-    tokens = createlist();
-
     tokenize(md);
 
 #ifdef DEBUG_PARSER
-    printlist(tokens);
+    printlist(tokenizer.tokens);
 #endif
 
-    out = createstring("");
-    renderl = createlist();
+    renderer.out = createstring("", DEFAULT_STRING_LEN);
+    renderer.st = NULL;
 
-    render(tokens);
+    render(tokenizer.tokens);
 
-    html = (char*)calloc(strlen(out) + 1, sizeof(char));
-    strcat(html, out);
+    html = (char*)calloc(strlen(renderer.out->str) + 1, sizeof(char));
+    strcat(html, renderer.out->str);
 
-    freestring(out);
+    freestring(renderer.out);
     freestack();
-    freelist(tokens);
-    freetokenlist(tokens);
+    free(renderer.st);
+    freetokenlist(tokenizer.tokens);
+    freelist(tokenizer.tokens);
 
     return html;
 }
