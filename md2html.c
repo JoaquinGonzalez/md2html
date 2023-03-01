@@ -350,11 +350,27 @@ static void renderstacktop(int close)
         rendertag(sttoken, close);
 }
 
-static void renderaddp()
+static void renderaddp(struct MDList *prev)
 {
-    struct MDToken *nt = createtoken(MD_PARAGRAPH);
-    stackpush(nt);
-    renderstacktop(0);
+    struct MDToken *nt, *tp;
+
+    if (renderer.st == NULL) {
+        if (prev != NULL) {
+            tp = (struct MDToken*)prev->ptr;
+
+            if (tp->type == MD_NEWLINE) {
+                nt = createtoken(MD_PARAGRAPH);
+                listadd(renderer.renderl, nt);
+                stackpush(nt);
+                renderstacktop(0);
+            }
+        } else {
+            nt = createtoken(MD_PARAGRAPH);
+            listadd(renderer.renderl, nt);
+            stackpush(nt);
+            renderstacktop(0);
+        }
+    }
 }
 
 static void rendertext(struct MDToken *t)
@@ -406,8 +422,10 @@ static void appendout(char *str)
 
 static void render(struct MDList *list)
 {
-    struct MDToken *t, *tp;
+    struct MDToken *t;
     struct MDList *next = list, *prev = NULL;
+
+    renderer.renderl = createlist();
 
     while (next != NULL) {
         if (next->ptr != NULL) {
@@ -425,17 +443,7 @@ static void render(struct MDList *list)
                     renderlink(t);
                     break;
                 case MD_TEXT:
-                    if (renderer.st == NULL) {
-                        if (prev != NULL) {
-                            tp = (struct MDToken*)prev->ptr;
-
-                            if (tp->type == MD_NEWLINE) {
-                                renderaddp();
-                            }
-                        } else {
-                            renderaddp();
-                        }
-                    }
+                    renderaddp(prev);
                 case MD_HTML:
                     rendertext(t);
                     break;
@@ -453,6 +461,9 @@ static void render(struct MDList *list)
         prev = next;
         next = next->next;
     }
+
+    freetokenlist(renderer.renderl);
+    freelist(renderer.renderl);
 }
 
 static struct MDToken* createtoken(int type)
