@@ -9,7 +9,7 @@
 #define CHAR_IS_HEADER(x)      x == 35
 #define CHAR_IS_STAR(x)        x == 42
 #define CHAR_IS_SPACE(x)       x == 32
-#define CHAR_IS_TEXT(x)        (x >= 33 && x <= 126)
+#define CHAR_IS_TEXT(x)       (x >= 33 && x <= 126)
 
 enum MDTokenType
 {
@@ -362,6 +362,43 @@ static void rendertext(struct MDToken *t)
     appendout(t->value.s->str);
 }
 
+static void rendercode(struct MDToken *t)
+{
+    rendertag2("pre", 0);
+    rendertag2("code", 0);
+    rendertext(t);
+    rendertag2("code", 1);
+    rendertag2("pre", 1);
+}
+
+static void rendernewline(struct MDList *list, struct MDList *prev)
+{
+    struct MDToken *top, *nt, *tp;
+
+    if (renderer.st != NULL) {
+        top = (struct MDToken*)stacktop();
+
+        if (top->type == MD_PARAGRAPH && list->next != NULL) {
+            nt = (struct MDToken*)list->next->ptr;
+
+            if (nt->type == MD_NEWLINE) {
+                renderstacktop(1);
+                stackpop();
+            }
+        } else {
+            renderstacktop(1);
+            stackpop();
+        }
+    }
+
+    if (prev != NULL) {
+        tp = (struct MDToken*)prev->ptr;
+
+        if (tp->type != MD_NEWLINE)
+            appendout("\n");
+    }
+}
+
 static void appendout(char *str)
 {
     renderer.out = stringcat(str, renderer.out);
@@ -369,90 +406,42 @@ static void appendout(char *str)
 
 static void render(struct MDList *list)
 {
-    struct MDToken *t, *top, *prev = NULL;
-    struct MDList *next = list;
-    unsigned char nl = 0;
+    struct MDToken *t;
+    struct MDList *next = list, *prev = NULL;
 
     while (next != NULL) {
         if (next->ptr != NULL) {
             t = (struct MDToken*)next->ptr;
 
-#ifdef DEBUG
-            printtoken(t);
-#endif
-
             switch (t->type) {
-                case MD_BOLD:
-                case MD_ITALIC:
                 case MD_HEADER:
-                    if (renderer.st != NULL) {
-                        top = (struct MDToken*)stacktop();
-
-                        if (top->type == t->type) {
-                            renderstacktop(1);
-                            stackpop();
-                        } else {
-                            if (top->type == MD_PARAGRAPH) {
-                                stackpush(t);
-                                renderstacktop(0);
-                            }
-                        }
-                    } else {
-                        if (t->type == MD_BOLD
-                            || t->type == MD_ITALIC)
-                            renderaddp();
-
-                        stackpush(t);
-                        renderstacktop(0);
-                    }
+                case MD_ITALIC:
+                case MD_BOLD:
+                    stackpush(t);
+                    renderstacktop(0);
                     break;
-                case MD_IMAGE:
                 case MD_LINK:
+                case MD_IMAGE:
                     renderlink(t);
                     break;
                 case MD_TEXT:
-                    if (renderer.st == NULL) {
-                        if (prev == NULL || prev->type != MD_HTML)
-                            renderaddp();
-                    }
-
-                    rendertext(t);
-                    break;
-                case MD_CODE:
-                    rendertag2("pre", 0);
-                    rendertag(t, 0);
-                    rendertext(t);
-                    rendertag(t, 1);
-                    rendertag2("pre", 1);
-                    break;
+                    if (renderer.st == NULL)
+                        renderaddp();
                 case MD_HTML:
                     rendertext(t);
                     break;
+                case MD_CODE:
+                    rendercode(t);
+                    break;
                 case MD_NEWLINE:
-                    if (renderer.st != NULL) {
-                        top = (struct MDToken*)stacktop();
-
-                        if (top->type == MD_HEADER) {
-                            renderstacktop(1);
-                            stackpop();
-                        }
-
-                        if (nl == 2 || next->next == NULL) {
-                            renderstacktop(1);
-                            stackpop();
-                            nl = 0;
-                        }
-
-                        appendout("\n");
-                        ++nl;
-                    }
+                    rendernewline(next, prev);
                     break;
                 case MD_PARAGRAPH:
                     break;
             }
         }
 
-        prev = t;
+        prev = next;
         next = next->next;
     }
 }
@@ -526,12 +515,12 @@ static int parsetext()
     struct MDToken *t = createtoken(MD_TEXT);
     char c[1];
 
-    if (!CHAR_IS_TEXT(currentchr())) {
+    if (!CHAR_IS_TEXT(currentchr()) && currentchr() != '<') {
         freetoken(t);
         return 0;
     }
 
-    while (CHAR_IS_TEXT(currentchr()) || CHAR_IS_SPACE(currentchr())) {
+    while ((CHAR_IS_TEXT(currentchr()) || CHAR_IS_SPACE(currentchr())) && currentchr() != '<') {
         c[0] = currentchr();
         t->value.s = stringcat(c, t->value.s);
         advancechr();
@@ -725,6 +714,7 @@ char* md2html(char *md)
     printlist(tokenizer.tokens);
 #endif
 
+#ifndef DISABLE_RENDERER
     renderer.out = createstring("", DEFAULT_STRING_LEN);
     renderer.st = NULL;
 
@@ -736,6 +726,7 @@ char* md2html(char *md)
     freestring(renderer.out);
     freestack();
     free(renderer.st);
+#endif
     freetokenlist(tokenizer.tokens);
     freelist(tokenizer.tokens);
 
@@ -763,8 +754,12 @@ int main(int argc, char **argv)
     fclose(f);
 
     html = md2html(buff);
+#ifndef DISABLE_RENDERER
+#ifndef DISABLE_OUTPUT
     printf("%s", html);
+#endif
     free(html);
+#endif
 
     return 0;
 }
