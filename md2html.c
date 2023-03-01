@@ -406,7 +406,7 @@ static void appendout(char *str)
 
 static void render(struct MDList *list)
 {
-    struct MDToken *t;
+    struct MDToken *t, *tp;
     struct MDList *next = list, *prev = NULL;
 
     while (next != NULL) {
@@ -425,8 +425,17 @@ static void render(struct MDList *list)
                     renderlink(t);
                     break;
                 case MD_TEXT:
-                    if (renderer.st == NULL)
-                        renderaddp();
+                    if (renderer.st == NULL) {
+                        if (prev != NULL) {
+                            tp = (struct MDToken*)prev->ptr;
+
+                            if (tp->type == MD_NEWLINE) {
+                                renderaddp();
+                            }
+                        } else {
+                            renderaddp();
+                        }
+                    }
                 case MD_HTML:
                     rendertext(t);
                     break;
